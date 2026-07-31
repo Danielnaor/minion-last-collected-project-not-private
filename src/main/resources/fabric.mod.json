@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "minion-last-collected",
+	"version": "${version}",
+	"name": "Minion Last Collected",
+	"description": "Shows when Hypixel SkyBlock minions were last collected.",
+	"authors": [
+		"Daniel Naor"
+	],
+	"license": "CC0-1.0",
+	"icon": "assets/minion-last-collected/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			{
+				"value": "com.danielnaor.client.MinionLastCollectedClient",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"mixins": [
+		"minion-last-collected.client.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*",
+		"fabric-language-kotlin": "*"
+	}
+}
