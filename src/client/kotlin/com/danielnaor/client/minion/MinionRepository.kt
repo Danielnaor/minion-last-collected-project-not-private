@@ -35,13 +35,23 @@ object MinionRepository {
 
 	fun ensure(
 		context: String,
+		profile: String?,
 		position: Vec3,
 		minionType: String? = null,
 		minionLevel: Int? = null,
 	): MinionRecord {
-		val existing = find(context, position)
+		val existing = find(context, profile, position)
 		if (existing != null) {
 			var changed = false
+			// Claims a record saved before profiles were tracked for the current profile.
+			if (profile != null && existing.profile == null) {
+				existing.profile = profile
+				changed = true
+				MinionLastCollectedClient.LOGGER.info(
+					"Adopted a minion saved before profile tracking into profile {}",
+					profile,
+				)
+			}
 			if (minionType != null && existing.minionType != minionType) {
 				existing.minionType = minionType
 				changed = true
@@ -59,6 +69,7 @@ object MinionRepository {
 			x = position.x,
 			y = position.y,
 			z = position.z,
+			profile = profile,
 			minionType = minionType,
 			minionLevel = minionLevel,
 		).also {
@@ -71,8 +82,14 @@ object MinionRepository {
 	 * Records the current contents of the fuel slot. A null [fuel] means the tank is
 	 * empty, which is a real state worth saving, so this always overwrites.
 	 */
-	fun updateFuel(context: String, position: Vec3, fuel: String?, fuelCount: Int?): Boolean {
-		val record = find(context, position) ?: return false
+	fun updateFuel(
+		context: String,
+		profile: String?,
+		position: Vec3,
+		fuel: String?,
+		fuelCount: Int?,
+	): Boolean {
+		val record = find(context, profile, position) ?: return false
 		if (record.fuel == fuel && record.fuelCount == fuelCount) return false
 		record.fuel = fuel
 		record.fuelCount = fuelCount
@@ -80,31 +97,43 @@ object MinionRepository {
 		return true
 	}
 
-	fun markCollected(context: String, position: Vec3) {
-		ensure(context, position).lastCollectedEpochMillis = System.currentTimeMillis()
+	fun markCollected(context: String, profile: String?, position: Vec3) {
+		ensure(context, profile, position).lastCollectedEpochMillis = System.currentTimeMillis()
 		save()
 	}
 
-	fun remove(context: String, position: Vec3) {
+	fun remove(context: String, profile: String?, position: Vec3) {
 		records.removeIf {
-			it.context == context && it.position().distanceToSqr(position) <= POSITION_TOLERANCE_SQUARED
+			it.context == context &&
+				(it.profile == profile || it.profile == null) &&
+				it.position().distanceToSqr(position) <= POSITION_TOLERANCE_SQUARED
 		}
 		save()
 	}
 
-	fun labelFor(context: String, position: Vec3): String? {
-		val record = find(context, position) ?: return null
+	fun labelFor(context: String, profile: String?, position: Vec3): String? {
+		val record = find(context, profile, position) ?: return null
 		return "Last Collected: ${MinionTimeFormatter.format(record.lastCollectedEpochMillis)}"
 	}
 
-	private fun find(context: String, position: Vec3): MinionRecord? {
-		return records
+	/**
+	 * Looks up the minion at [position] belonging to [profile]. This runs on the render
+	 * path via [labelFor], so it stays a pure query: adopting a legacy record is left to
+	 * [ensure], which already writes to disk.
+	 */
+	private fun find(context: String, profile: String?, position: Vec3): MinionRecord? {
+		val nearby = records
 			.asSequence()
 			.filter { it.context == context }
 			.map { it to it.position().distanceToSqr(position) }
 			.filter { (_, distance) -> distance <= POSITION_TOLERANCE_SQUARED }
-			.minByOrNull { (_, distance) -> distance }
-			?.first
+			.sortedBy { (_, distance) -> distance }
+			.map { (record, _) -> record }
+
+		// A record saved before profiles were tracked belongs to whichever profile looks
+		// at it first; one saved against another profile is never reused.
+		return nearby.firstOrNull { it.profile == profile }
+			?: nearby.firstOrNull { it.profile == null }
 	}
 
 	private fun save() {

@@ -13,7 +13,7 @@ import net.minecraft.world.phys.Vec3
 
 object MinionTracker {
 	private data class PendingTarget(val position: Vec3, val clickedAt: Long)
-	private data class ActiveTarget(val context: String, val position: Vec3)
+	private data class ActiveTarget(val context: String, val profile: String?, val position: Vec3)
 
 	private var pendingTarget: PendingTarget? = null
 	private var activeTarget: ActiveTarget? = null
@@ -41,10 +41,16 @@ object MinionTracker {
 
 				if (pending != null) {
 					val (minionType, minionLevel) = parseMinionTitle(screen.title.string)
-					val target = ActiveTarget(currentContext(), pending.position)
+					val target = ActiveTarget(currentContext(), MinionProfile.current, pending.position)
 					activeTarget = target
 					pendingTarget = null
-					MinionRepository.ensure(target.context, target.position, minionType, minionLevel)
+					MinionRepository.ensure(
+						target.context,
+						target.profile,
+						target.position,
+						minionType,
+						minionLevel,
+					)
 					MinionLastCollectedClient.LOGGER.info(
 						"Opened minion at {}, {}, {}",
 						target.position.x,
@@ -77,7 +83,7 @@ object MinionTracker {
 		if (!isContainerLoaded(screen)) return
 
 		val (fuel, fuelCount) = readFuel(screen)
-		if (MinionRepository.updateFuel(target.context, target.position, fuel, fuelCount)) {
+		if (MinionRepository.updateFuel(target.context, target.profile, target.position, fuel, fuelCount)) {
 			MinionLastCollectedClient.LOGGER.info(
 				"Minion fuel detected: {} x{}",
 				fuel ?: "none",
@@ -117,13 +123,13 @@ object MinionTracker {
 		val itemName = slot.item.hoverName.string
 		when {
 			itemName.contains("Pickup Minion", ignoreCase = true) -> {
-				MinionRepository.remove(target.context, target.position)
+				MinionRepository.remove(target.context, target.profile, target.position)
 				activeTarget = null
 				showStatus("Removed saved minion")
 			}
 			itemName.contains("Collect All", ignoreCase = true) ||
 				itemName.contains("Hopper", ignoreCase = true) -> {
-				MinionRepository.markCollected(target.context, target.position)
+				MinionRepository.markCollected(target.context, target.profile, target.position)
 				showStatus("Collection time saved")
 			}
 		}
@@ -131,7 +137,7 @@ object MinionTracker {
 
 	@JvmStatic
 	fun labelFor(position: Vec3): String? {
-		return MinionRepository.labelFor(currentContext(), position)
+		return MinionRepository.labelFor(currentContext(), MinionProfile.current, position)
 	}
 
 	private fun currentContext(): String {
