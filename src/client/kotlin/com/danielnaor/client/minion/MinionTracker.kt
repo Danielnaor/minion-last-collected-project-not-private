@@ -76,9 +76,13 @@ object MinionTracker {
 		val target = activeTarget ?: return
 		if (!isContainerLoaded(screen)) return
 
-		val fuel = readFuel(screen)
-		if (MinionRepository.updateFuel(target.context, target.position, fuel)) {
-			MinionLastCollectedClient.LOGGER.info("Minion fuel detected: {}", fuel ?: "none")
+		val (fuel, fuelCount) = readFuel(screen)
+		if (MinionRepository.updateFuel(target.context, target.position, fuel, fuelCount)) {
+			MinionLastCollectedClient.LOGGER.info(
+				"Minion fuel detected: {} x{}",
+				fuel ?: "none",
+				fuelCount ?: 0,
+			)
 		}
 	}
 
@@ -95,14 +99,14 @@ object MinionTracker {
 		return false
 	}
 
-	private fun readFuel(screen: AbstractContainerScreen<*>): String? {
-		val slot = screen.menu.slots.getOrNull(MINION_FUEL_SLOT) ?: return null
-		if (!slot.hasItem()) return null
+	private fun readFuel(screen: AbstractContainerScreen<*>): Pair<String?, Int?> {
+		val slot = screen.menu.slots.getOrNull(MINION_FUEL_SLOT) ?: return null to null
+		if (!slot.hasItem()) return null to null
 
 		val name = slot.item.hoverName.string.trim()
-		if (name.isEmpty()) return null
-		if (FUEL_PLACEHOLDER_NAMES.any { it.equals(name, ignoreCase = true) }) return null
-		return name
+		if (name.isEmpty()) return null to null
+		if (FUEL_PLACEHOLDER_NAMES.any { it.equals(name, ignoreCase = true) }) return null to null
+		return name to slot.item.count
 	}
 
 	@JvmStatic
