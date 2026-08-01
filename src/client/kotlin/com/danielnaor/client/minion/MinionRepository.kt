@@ -1,36 +1,22 @@
 package com.danielnaor.client.minion
 
 import com.danielnaor.client.MinionLastCollectedClient
-import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
-import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.world.phys.Vec3
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 object MinionRepository {
-	private val gson = GsonBuilder().setPrettyPrinting().create()
+	private val store = MinionJsonStore("minions.json")
 	private val recordListType = object : TypeToken<MutableList<MinionRecord>>() {}.type
-	private val directory = FabricLoader.getInstance().configDir.resolve(MinionLastCollectedClient.MOD_ID)
-	private val file = directory.resolve("minions.json")
 	private val records = mutableListOf<MinionRecord>()
 
 	val size: Int
 		get() = records.size
 
+	fun all(): List<MinionRecord> = records.toList()
+
 	fun load() {
 		records.clear()
-		if (!Files.exists(file)) return
-
-		runCatching {
-			Files.newBufferedReader(file).use { reader ->
-				val loaded: MutableList<MinionRecord>? = gson.fromJson(reader, recordListType)
-				if (loaded != null) records.addAll(loaded)
-			}
-		}.onFailure {
-			MinionLastCollectedClient.LOGGER.error("Could not load {}", file, it)
-		}
+		store.load<MutableList<MinionRecord>>(recordListType)?.let { records.addAll(it) }
 	}
 
 	fun ensure(
@@ -97,6 +83,30 @@ object MinionRepository {
 		return true
 	}
 
+	/**
+	 * Records what is currently sitting in the minion's storage slots. Always overwrites,
+	 * because an emptied minion is a real state and not a missing reading.
+	 */
+	fun updateContents(
+		context: String,
+		profile: String?,
+		position: Vec3,
+		snapshot: MinionSnapshot,
+	): Boolean {
+		val record = find(context, profile, position) ?: return false
+		if (record.contents == snapshot.contents &&
+			record.storageUpgrade == snapshot.storageUpgrade &&
+			record.storageSlots == snapshot.storageSlots
+		) {
+			return false
+		}
+		record.contents = snapshot.contents.toMutableMap()
+		record.storageUpgrade = snapshot.storageUpgrade
+		record.storageSlots = snapshot.storageSlots
+		save()
+		return true
+	}
+
 	fun markCollected(context: String, profile: String?, position: Vec3) {
 		ensure(context, profile, position).lastCollectedEpochMillis = System.currentTimeMillis()
 		save()
@@ -106,7 +116,7 @@ object MinionRepository {
 		records.removeIf {
 			it.context == context &&
 				(it.profile == profile || it.profile == null) &&
-				it.position().distanceToSqr(position) <= POSITION_TOLERANCE_SQUARED
+				MinionPositions.matches(it.x, it.y, it.z, position)
 		}
 		save()
 	}
@@ -125,10 +135,8 @@ object MinionRepository {
 		val nearby = records
 			.asSequence()
 			.filter { it.context == context }
-			.map { it to it.position().distanceToSqr(position) }
-			.filter { (_, distance) -> distance <= POSITION_TOLERANCE_SQUARED }
-			.sortedBy { (_, distance) -> distance }
-			.map { (record, _) -> record }
+			.filter { MinionPositions.matches(it.x, it.y, it.z, position) }
+			.sortedBy { MinionPositions.distanceSquared(it.x, it.y, it.z, position) }
 
 		// A record saved before profiles were tracked belongs to whichever profile looks
 		// at it first; one saved against another profile is never reused.
@@ -137,27 +145,6 @@ object MinionRepository {
 	}
 
 	private fun save() {
-		runCatching {
-			Files.createDirectories(directory)
-			val temporaryFile = directory.resolve("minions.json.tmp")
-			Files.newBufferedWriter(temporaryFile).use { writer ->
-				gson.toJson(records, recordListType, writer)
-			}
-
-			try {
-				Files.move(
-					temporaryFile,
-					file,
-					StandardCopyOption.ATOMIC_MOVE,
-					StandardCopyOption.REPLACE_EXISTING,
-				)
-			} catch (_: AtomicMoveNotSupportedException) {
-				Files.move(temporaryFile, file, StandardCopyOption.REPLACE_EXISTING)
-			}
-		}.onFailure {
-			MinionLastCollectedClient.LOGGER.error("Could not save {}", file, it)
-		}
+		store.save(records, recordListType)
 	}
-
-	private const val POSITION_TOLERANCE_SQUARED = 0.04
 }
