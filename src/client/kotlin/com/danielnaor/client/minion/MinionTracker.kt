@@ -40,10 +40,11 @@ object MinionTracker {
 				?.takeIf { System.currentTimeMillis() - it.clickedAt <= PENDING_TARGET_TIMEOUT_MS }
 
 				if (pending != null) {
+					val (minionType, minionLevel) = parseMinionTitle(screen.title.string)
 					val target = ActiveTarget(currentContext(), pending.position)
 					activeTarget = target
 					pendingTarget = null
-					MinionRepository.ensure(target.context, target.position)
+					MinionRepository.ensure(target.context, target.position, minionType, minionLevel)
 					MinionLastCollectedClient.LOGGER.info(
 						"Opened minion at {}, {}, {}",
 						target.position.x,
@@ -101,6 +102,23 @@ object MinionTracker {
 		return MINION_TITLE.matches(title.trim())
 	}
 
+	private fun parseMinionTitle(title: String): Pair<String?, Int?> {
+		val match = MINION_TITLE.matchEntire(title.trim()) ?: return null to null
+		val (type, level) = match.destructured
+		return type.trim() to romanToInt(level)
+	}
+
+	private fun romanToInt(roman: String): Int? {
+		var total = 0
+		var previous = 0
+		for (char in roman.uppercase().reversed()) {
+			val value = ROMAN_VALUES[char] ?: return null
+			total += if (value < previous) -value else value
+			previous = value
+		}
+		return total
+	}
+
 	private fun showStatus(message: String) {
 		Minecraft.getInstance().player?.displayClientMessage(
 			Component.literal("[Minion Last Collected] $message"),
@@ -108,6 +126,9 @@ object MinionTracker {
 		)
 	}
 
-	private val MINION_TITLE = Regex(""".+\sMinion\s+[IVXLCDM]+""", RegexOption.IGNORE_CASE)
+	private val MINION_TITLE = Regex("""^(.+)\sMinion\s+([IVXLCDM]+)$""", RegexOption.IGNORE_CASE)
+	private val ROMAN_VALUES = mapOf(
+		'I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000,
+	)
 	private const val PENDING_TARGET_TIMEOUT_MS = 5_000L
 }
