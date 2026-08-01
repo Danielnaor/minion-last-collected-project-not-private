@@ -33,16 +33,50 @@ object MinionRepository {
 		}
 	}
 
-	fun ensure(context: String, position: Vec3): MinionRecord {
-		return find(context, position) ?: MinionRecord(
+	fun ensure(
+		context: String,
+		position: Vec3,
+		minionType: String? = null,
+		minionLevel: Int? = null,
+	): MinionRecord {
+		val existing = find(context, position)
+		if (existing != null) {
+			var changed = false
+			if (minionType != null && existing.minionType != minionType) {
+				existing.minionType = minionType
+				changed = true
+			}
+			if (minionLevel != null && existing.minionLevel != minionLevel) {
+				existing.minionLevel = minionLevel
+				changed = true
+			}
+			if (changed) save()
+			return existing
+		}
+
+		return MinionRecord(
 			context = context,
 			x = position.x,
 			y = position.y,
 			z = position.z,
+			minionType = minionType,
+			minionLevel = minionLevel,
 		).also {
 			records.add(it)
 			save()
 		}
+	}
+
+	/**
+	 * Records the current contents of the fuel slot. A null [fuel] means the tank is
+	 * empty, which is a real state worth saving, so this always overwrites.
+	 */
+	fun updateFuel(context: String, position: Vec3, fuel: String?): Boolean {
+		val record = find(context, position) ?: return false
+		if (record.fuel == fuel) return false
+		record.fuel = fuel
+		save()
+		return true
 	}
 
 	fun markCollected(context: String, position: Vec3) {

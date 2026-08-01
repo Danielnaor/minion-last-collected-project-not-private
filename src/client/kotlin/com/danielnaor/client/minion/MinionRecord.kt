@@ -7,6 +7,9 @@ data class MinionRecord(
 	val x: Double,
 	val y: Double,
 	val z: Double,
+	var minionType: String? = null,
+	var minionLevel: Int? = null,
+	var fuel: String? = null,
 	var lastCollectedEpochMillis: Long = 0L,
 ) {
 	fun position(): Vec3 = Vec3(x, y, z)

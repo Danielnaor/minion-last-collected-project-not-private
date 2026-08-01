@@ -40,16 +40,23 @@ object MinionTracker {
 				?.takeIf { System.currentTimeMillis() - it.clickedAt <= PENDING_TARGET_TIMEOUT_MS }
 
 				if (pending != null) {
+					val (minionType, minionLevel) = parseMinionTitle(screen.title.string)
 					val target = ActiveTarget(currentContext(), pending.position)
 					activeTarget = target
 					pendingTarget = null
-					MinionRepository.ensure(target.context, target.position)
+					MinionRepository.ensure(target.context, target.position, minionType, minionLevel)
 					MinionLastCollectedClient.LOGGER.info(
 						"Opened minion at {}, {}, {}",
 						target.position.x,
 						target.position.y,
 						target.position.z,
 					)
+
+					// Hypixel fills the container a few ticks after the screen opens, so
+					// the fuel slot has to be polled rather than read once during init.
+					ScreenEvents.afterTick(screen).register {
+						pollFuel(screen)
+					}
 				} else {
 					MinionLastCollectedClient.LOGGER.warn(
 						"Opened a minion screen without a recent armor stand interaction",
@@ -63,6 +70,39 @@ object MinionTracker {
 				activeTarget = null
 			}
 		}
+	}
+
+	private fun pollFuel(screen: AbstractContainerScreen<*>) {
+		val target = activeTarget ?: return
+		if (!isContainerLoaded(screen)) return
+
+		val fuel = readFuel(screen)
+		if (MinionRepository.updateFuel(target.context, target.position, fuel)) {
+			MinionLastCollectedClient.LOGGER.info("Minion fuel detected: {}", fuel ?: "none")
+		}
+	}
+
+	/**
+	 * The container starts out empty and is populated by the server shortly after the
+	 * screen opens. Treat any item in the upper container as proof it has arrived, so an
+	 * unloaded screen is never mistaken for a minion with an empty fuel tank.
+	 */
+	private fun isContainerLoaded(screen: AbstractContainerScreen<*>): Boolean {
+		val slots = screen.menu.slots
+		for (index in 0 until minOf(MINION_CONTAINER_SIZE, slots.size)) {
+			if (slots[index].hasItem()) return true
+		}
+		return false
+	}
+
+	private fun readFuel(screen: AbstractContainerScreen<*>): String? {
+		val slot = screen.menu.slots.getOrNull(MINION_FUEL_SLOT) ?: return null
+		if (!slot.hasItem()) return null
+
+		val name = slot.item.hoverName.string.trim()
+		if (name.isEmpty()) return null
+		if (FUEL_PLACEHOLDER_NAMES.any { it.equals(name, ignoreCase = true) }) return null
+		return name
 	}
 
 	@JvmStatic
@@ -101,6 +141,23 @@ object MinionTracker {
 		return MINION_TITLE.matches(title.trim())
 	}
 
+	private fun parseMinionTitle(title: String): Pair<String?, Int?> {
+		val match = MINION_TITLE.matchEntire(title.trim()) ?: return null to null
+		val (type, level) = match.destructured
+		return type.trim() to romanToInt(level)
+	}
+
+	private fun romanToInt(roman: String): Int? {
+		var total = 0
+		var previous = 0
+		for (char in roman.uppercase().reversed()) {
+			val value = ROMAN_VALUES[char] ?: return null
+			total += if (value < previous) -value else value
+			previous = value
+		}
+		return total
+	}
+
 	private fun showStatus(message: String) {
 		Minecraft.getInstance().player?.displayClientMessage(
 			Component.literal("[Minion Last Collected] $message"),
@@ -108,6 +165,16 @@ object MinionTracker {
 		)
 	}
 
-	private val MINION_TITLE = Regex(""".+\sMinion\s+[IVXLCDM]+""", RegexOption.IGNORE_CASE)
+	private val MINION_TITLE = Regex("""^(.+)\sMinion\s+([IVXLCDM]+)$""", RegexOption.IGNORE_CASE)
+	private val ROMAN_VALUES = mapOf(
+		'I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000,
+	)
 	private const val PENDING_TARGET_TIMEOUT_MS = 5_000L
+
+	// Slot indices match the Hypixel minion menu layout.
+	private const val MINION_FUEL_SLOT = 19
+	private const val MINION_CONTAINER_SIZE = 54
+
+	// Shown by Hypixel when the fuel slot is empty, rather than a blank slot.
+	private val FUEL_PLACEHOLDER_NAMES = setOf("Minion Fuel", "Empty")
 }
