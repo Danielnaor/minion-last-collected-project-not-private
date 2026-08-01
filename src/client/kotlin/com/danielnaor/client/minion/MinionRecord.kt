@@ -7,6 +7,8 @@ data class MinionRecord(
 	val x: Double,
 	val y: Double,
 	val z: Double,
+	/** Null on records saved before profiles were tracked; adopted on first match. */
+	var profile: String? = null,
 	var minionType: String? = null,
 	var minionLevel: Int? = null,
 	var fuel: String? = null,

@@ -1,5 +1,6 @@
 package com.danielnaor.client
 
+import com.danielnaor.client.minion.MinionProfile
 import com.danielnaor.client.minion.MinionRepository
 import com.danielnaor.client.minion.MinionTracker
 import net.fabricmc.api.ClientModInitializer
@@ -11,6 +12,7 @@ object MinionLastCollectedClient : ClientModInitializer {
 
 	override fun onInitializeClient() {
 		MinionRepository.load()
+		MinionProfile.register()
 		MinionTracker.register()
 		LOGGER.info("Minion Last Collected initialized with {} saved minion(s)", MinionRepository.size)
 	}
