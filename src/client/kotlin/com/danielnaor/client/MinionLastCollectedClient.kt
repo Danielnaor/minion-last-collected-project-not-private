@@ -1,5 +1,7 @@
 package com.danielnaor.client
 
+import com.danielnaor.client.minion.MinionCommands
+import com.danielnaor.client.minion.MinionHistoryRepository
 import com.danielnaor.client.minion.MinionProfile
 import com.danielnaor.client.minion.MinionRepository
 import com.danielnaor.client.minion.MinionTracker
@@ -12,8 +14,14 @@ object MinionLastCollectedClient : ClientModInitializer {
 
 	override fun onInitializeClient() {
 		MinionRepository.load()
+		MinionHistoryRepository.load()
 		MinionProfile.register()
 		MinionTracker.register()
-		LOGGER.info("Minion Last Collected initialized with {} saved minion(s)", MinionRepository.size)
+		MinionCommands.register()
+		LOGGER.info(
+			"Minion Last Collected initialized with {} saved minion(s) and {} history entries",
+			MinionRepository.size,
+			MinionHistoryRepository.size,
+		)
 	}
 }

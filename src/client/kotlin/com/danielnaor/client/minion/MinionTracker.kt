@@ -2,6 +2,7 @@ package com.danielnaor.client.minion
 
 import com.danielnaor.client.MinionLastCollectedClient
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
+import net.fabricmc.fabric.api.event.player.UseBlockCallback
 import net.fabricmc.fabric.api.event.player.UseEntityCallback
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
@@ -12,22 +13,48 @@ import net.minecraft.world.inventory.Slot
 import net.minecraft.world.phys.Vec3
 
 object MinionTracker {
-	private data class PendingTarget(val position: Vec3, val clickedAt: Long)
+	private data class Pending(val position: Vec3, val clickedAt: Long)
 	private data class ActiveTarget(val context: String, val profile: String?, val position: Vec3)
 
-	private var pendingTarget: PendingTarget? = null
-	private var activeTarget: ActiveTarget? = null
+	private var pendingEntity: Pending? = null
+	private var pendingBlock: Pending? = null
+
+	/** Set once the open menu has been identified as a minion. */
+	private var activeMinion: ActiveTarget? = null
+
+	/** Set once the open menu has been identified as a Minion Storage screen. */
+	private var activeStorage: ActiveTarget? = null
+
+	private var menuIdentified = false
+
+	/**
+	 * Whether this menu has been folded into the history yet. Polling runs every tick, so
+	 * without this an unchanged menu would rewrite the history file continuously.
+	 */
+	private var observedThisMenu = false
+	private var minionType: String? = null
+	private var minionLevel: Int? = null
+
+	/**
+	 * Snapshot of the last minion menu seen, for `/minionsdump`. Opening chat closes the
+	 * container, so a command can never read a live menu; it has to be captured here.
+	 */
+	private var lastDump: List<String> = emptyList()
+	private var lastDumpTitle: String? = null
 
 	fun register() {
 		UseEntityCallback.EVENT.register(UseEntityCallback { _, world, _, entity, _ ->
 			if (world.isClientSide && entity is ArmorStand) {
-				pendingTarget = PendingTarget(entity.position(), System.currentTimeMillis())
-				MinionLastCollectedClient.LOGGER.debug(
-					"Clicked armor stand at {}, {}, {}",
-					entity.x,
-					entity.y,
-					entity.z,
-				)
+				pendingEntity = Pending(entity.position(), System.currentTimeMillis())
+			}
+			InteractionResult.PASS
+		})
+
+		// The Minion Storage screen is opened from a block, not from a minion, so it needs
+		// its own most-recent-interaction to be attributed to anything.
+		UseBlockCallback.EVENT.register(UseBlockCallback { _, world, _, hitResult ->
+			if (world.isClientSide) {
+				pendingBlock = Pending(hitResult.blockPos.center, System.currentTimeMillis())
 			}
 			InteractionResult.PASS
 		})
@@ -36,51 +63,128 @@ object MinionTracker {
 			if (screen !is AbstractContainerScreen<*>) return@register
 
 			if (isMinionTitle(screen.title.string)) {
-				val pending = pendingTarget
-				?.takeIf { System.currentTimeMillis() - it.clickedAt <= PENDING_TARGET_TIMEOUT_MS }
+				val parsed = parseMinionTitle(screen.title.string)
+				minionType = parsed.first
+				minionLevel = parsed.second
+				menuIdentified = false
 
-				if (pending != null) {
-					val (minionType, minionLevel) = parseMinionTitle(screen.title.string)
-					val target = ActiveTarget(currentContext(), MinionProfile.current, pending.position)
-					activeTarget = target
-					pendingTarget = null
-					MinionRepository.ensure(
-						target.context,
-						target.profile,
-						target.position,
-						minionType,
-						minionLevel,
-					)
-					MinionLastCollectedClient.LOGGER.info(
-						"Opened minion at {}, {}, {}",
-						target.position.x,
-						target.position.y,
-						target.position.z,
-					)
-
-					// Hypixel fills the container a few ticks after the screen opens, so
-					// the fuel slot has to be polled rather than read once during init.
-					ScreenEvents.afterTick(screen).register {
-						pollFuel(screen)
-					}
-				} else {
-					MinionLastCollectedClient.LOGGER.warn(
-						"Opened a minion screen without a recent armor stand interaction",
-					)
+				// Hypixel fills the container a few ticks after the screen opens, so both the
+				// menu contents and the check that tells a minion from its storage screen have
+				// to be polled rather than read once during init.
+				ScreenEvents.afterTick(screen).register {
+					pollScreen(screen)
 				}
 			} else {
-				activeTarget = null
+				clearActiveMenu()
 			}
 
 			ScreenEvents.remove(screen).register {
-				activeTarget = null
+				clearActiveMenu()
 			}
 		}
 	}
 
-	private fun pollFuel(screen: AbstractContainerScreen<*>) {
-		val target = activeTarget ?: return
-		if (!isContainerLoaded(screen)) return
+	private fun clearActiveMenu() {
+		activeMinion = null
+		activeStorage = null
+		menuIdentified = false
+		observedThisMenu = false
+		minionType = null
+		minionLevel = null
+	}
+
+	private fun pollScreen(screen: AbstractContainerScreen<*>) {
+		if (!MinionContents.isLoaded(screen)) return
+
+		if (!menuIdentified) {
+			menuIdentified = true
+			identifyMenu(screen)
+		}
+
+		activeMinion?.let { recordMinion(screen, it) }
+		activeStorage?.let { recordStorage(screen, it) }
+	}
+
+	/**
+	 * Decides whether the open menu is a minion or the separate Minion Storage screen. Both
+	 * share the "... Minion ..." title, so the presence of the Collect All button is what
+	 * tells them apart, the same discriminator SkyHanni uses.
+	 */
+	private fun identifyMenu(screen: AbstractContainerScreen<*>) {
+		captureDump(screen)
+
+		if (MinionContents.isMinionMenu(screen)) {
+			val pending = freshPending(pendingEntity)
+			if (pending == null) {
+				MinionLastCollectedClient.LOGGER.warn(
+					"Opened a minion screen without a recent armor stand interaction",
+				)
+				return
+			}
+
+			val target = ActiveTarget(currentContext(), MinionProfile.current, pending.position)
+			activeMinion = target
+			pendingEntity = null
+			MinionRepository.ensure(
+				target.context,
+				target.profile,
+				target.position,
+				minionType,
+				minionLevel,
+			)
+			MinionLastCollectedClient.LOGGER.info(
+				"Opened minion at {}, {}, {}",
+				target.position.x,
+				target.position.y,
+				target.position.z,
+			)
+			return
+		}
+
+		// Attribution here is best effort: the storage screen does not say which minion it
+		// belongs to, so it is keyed by the block that was just used to open it.
+		val pending = freshPending(pendingBlock)
+		if (pending == null) {
+			MinionLastCollectedClient.LOGGER.warn(
+				"Opened a minion storage screen without a recent block interaction",
+			)
+			return
+		}
+
+		activeStorage = ActiveTarget(currentContext(), MinionProfile.current, pending.position)
+		pendingBlock = null
+		MinionLastCollectedClient.LOGGER.info("Opened minion storage")
+	}
+
+	private fun recordMinion(screen: AbstractContainerScreen<*>, target: ActiveTarget) {
+		val snapshot = MinionContents.read(screen)
+		val changed = MinionRepository.updateContents(
+			target.context,
+			target.profile,
+			target.position,
+			snapshot,
+		)
+
+		// Record on the first poll even when nothing changed, otherwise a minion that is
+		// always read with the same contents would never start its observation window.
+		if (changed || !observedThisMenu) {
+			observedThisMenu = true
+			MinionHistoryRepository.observe(
+				context = target.context,
+				profile = target.profile,
+				position = target.position,
+				kind = MinionHistoryEntry.KIND_MINION,
+				contents = snapshot.contents,
+				minionType = minionType,
+				minionLevel = minionLevel,
+			)
+			MinionLastCollectedClient.LOGGER.info(
+				"Minion contents: {} ({} slot upgrade: {})",
+				snapshot.contents,
+				snapshot.storageSlots ?: "?",
+				snapshot.storageUpgrade ?: "none",
+			)
+		}
 
 		val (fuel, fuelCount) = readFuel(screen)
 		if (MinionRepository.updateFuel(target.context, target.profile, target.position, fuel, fuelCount)) {
@@ -92,44 +196,67 @@ object MinionTracker {
 		}
 	}
 
-	/**
-	 * The container starts out empty and is populated by the server shortly after the
-	 * screen opens. Treat any item in the upper container as proof it has arrived, so an
-	 * unloaded screen is never mistaken for a minion with an empty fuel tank.
-	 */
-	private fun isContainerLoaded(screen: AbstractContainerScreen<*>): Boolean {
+	private fun recordStorage(screen: AbstractContainerScreen<*>, target: ActiveTarget) {
+		if (observedThisMenu) return
+		observedThisMenu = true
+		MinionHistoryRepository.observe(
+			context = target.context,
+			profile = target.profile,
+			position = target.position,
+			kind = MinionHistoryEntry.KIND_STORAGE,
+			contents = MinionContents.readAll(screen),
+		)
+	}
+
+	private fun captureDump(screen: AbstractContainerScreen<*>) {
 		val slots = screen.menu.slots
-		for (index in 0 until minOf(MINION_CONTAINER_SIZE, slots.size)) {
-			if (slots[index].hasItem()) return true
+		val dump = mutableListOf<String>()
+		for (index in 0 until MinionContents.containerSlotCount(screen)) {
+			val stack = slots.getOrNull(index)?.item ?: continue
+			val name = MinionContents.itemName(stack) ?: continue
+			val role = when {
+				index in MinionSlots.STORAGE -> "storage?"
+				index in MinionSlots.FURNITURE -> "furniture"
+				else -> "-"
+			}
+			dump += "$index [$role] ${stack.count}x $name"
 		}
-		return false
+		lastDump = dump
+		lastDumpTitle = screen.title.string
+	}
+
+	fun lastDump(): Pair<String?, List<String>> = lastDumpTitle to lastDump
+
+	private fun freshPending(pending: Pending?): Pending? {
+		return pending?.takeIf { System.currentTimeMillis() - it.clickedAt <= PENDING_TARGET_TIMEOUT_MS }
 	}
 
 	private fun readFuel(screen: AbstractContainerScreen<*>): Pair<String?, Int?> {
-		val slot = screen.menu.slots.getOrNull(MINION_FUEL_SLOT) ?: return null to null
-		if (!slot.hasItem()) return null to null
-
-		val name = slot.item.hoverName.string.trim()
-		if (name.isEmpty()) return null to null
+		val slot = screen.menu.slots.getOrNull(MinionSlots.FUEL) ?: return null to null
+		val name = MinionContents.itemName(slot.item) ?: return null to null
 		if (FUEL_PLACEHOLDER_NAMES.any { it.equals(name, ignoreCase = true) }) return null to null
 		return name to slot.item.count
 	}
 
 	@JvmStatic
 	fun onSlotClicked(slot: Slot?, slotId: Int) {
-		val target = activeTarget ?: return
+		val target = activeMinion ?: return
 		if (slot == null || slotId < 0 || !slot.hasItem()) return
 
 		val itemName = slot.item.hoverName.string
 		when {
 			itemName.contains("Pickup Minion", ignoreCase = true) -> {
 				MinionRepository.remove(target.context, target.profile, target.position)
-				activeTarget = null
+				MinionHistoryRepository.remove(target.context, target.profile, target.position)
+				activeMinion = null
 				showStatus("Removed saved minion")
 			}
 			itemName.contains("Collect All", ignoreCase = true) ||
 				itemName.contains("Hopper", ignoreCase = true) -> {
 				MinionRepository.markCollected(target.context, target.profile, target.position)
+				// The emptied menu must not be read as a decrease, or the next cycle would be
+				// measured from the pre-collection amounts instead of from zero.
+				MinionHistoryRepository.onCollected(target.context, target.profile, target.position)
 				showStatus("Collection time saved")
 			}
 		}
@@ -140,7 +267,7 @@ object MinionTracker {
 		return MinionRepository.labelFor(currentContext(), MinionProfile.current, position)
 	}
 
-	private fun currentContext(): String {
+	fun currentContext(): String {
 		val client = Minecraft.getInstance()
 		val server = client.currentServer?.ip ?: "singleplayer"
 		val dimension = client.level?.dimension()?.identifier()?.toString() ?: "unknown"
@@ -180,10 +307,6 @@ object MinionTracker {
 		'I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000,
 	)
 	private const val PENDING_TARGET_TIMEOUT_MS = 5_000L
-
-	// Slot indices match the Hypixel minion menu layout.
-	private const val MINION_FUEL_SLOT = 19
-	private const val MINION_CONTAINER_SIZE = 54
 
 	// Shown by Hypixel when the fuel slot is empty, rather than a blank slot.
 	private val FUEL_PLACEHOLDER_NAMES = setOf("Minion Fuel", "Empty")
