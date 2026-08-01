@@ -51,6 +51,12 @@ object MinionTracker {
 						target.position.y,
 						target.position.z,
 					)
+
+					// Hypixel fills the container a few ticks after the screen opens, so
+					// the fuel slot has to be polled rather than read once during init.
+					ScreenEvents.afterTick(screen).register {
+						pollFuel(screen)
+					}
 				} else {
 					MinionLastCollectedClient.LOGGER.warn(
 						"Opened a minion screen without a recent armor stand interaction",
@@ -64,6 +70,39 @@ object MinionTracker {
 				activeTarget = null
 			}
 		}
+	}
+
+	private fun pollFuel(screen: AbstractContainerScreen<*>) {
+		val target = activeTarget ?: return
+		if (!isContainerLoaded(screen)) return
+
+		val fuel = readFuel(screen)
+		if (MinionRepository.updateFuel(target.context, target.position, fuel)) {
+			MinionLastCollectedClient.LOGGER.info("Minion fuel detected: {}", fuel ?: "none")
+		}
+	}
+
+	/**
+	 * The container starts out empty and is populated by the server shortly after the
+	 * screen opens. Treat any item in the upper container as proof it has arrived, so an
+	 * unloaded screen is never mistaken for a minion with an empty fuel tank.
+	 */
+	private fun isContainerLoaded(screen: AbstractContainerScreen<*>): Boolean {
+		val slots = screen.menu.slots
+		for (index in 0 until minOf(MINION_CONTAINER_SIZE, slots.size)) {
+			if (slots[index].hasItem()) return true
+		}
+		return false
+	}
+
+	private fun readFuel(screen: AbstractContainerScreen<*>): String? {
+		val slot = screen.menu.slots.getOrNull(MINION_FUEL_SLOT) ?: return null
+		if (!slot.hasItem()) return null
+
+		val name = slot.item.hoverName.string.trim()
+		if (name.isEmpty()) return null
+		if (FUEL_PLACEHOLDER_NAMES.any { it.equals(name, ignoreCase = true) }) return null
+		return name
 	}
 
 	@JvmStatic
@@ -131,4 +170,11 @@ object MinionTracker {
 		'I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000,
 	)
 	private const val PENDING_TARGET_TIMEOUT_MS = 5_000L
+
+	// Slot indices match the Hypixel minion menu layout.
+	private const val MINION_FUEL_SLOT = 19
+	private const val MINION_CONTAINER_SIZE = 54
+
+	// Shown by Hypixel when the fuel slot is empty, rather than a blank slot.
+	private val FUEL_PLACEHOLDER_NAMES = setOf("Minion Fuel", "Empty")
 }

@@ -67,6 +67,18 @@ object MinionRepository {
 		}
 	}
 
+	/**
+	 * Records the current contents of the fuel slot. A null [fuel] means the tank is
+	 * empty, which is a real state worth saving, so this always overwrites.
+	 */
+	fun updateFuel(context: String, position: Vec3, fuel: String?): Boolean {
+		val record = find(context, position) ?: return false
+		if (record.fuel == fuel) return false
+		record.fuel = fuel
+		save()
+		return true
+	}
+
 	fun markCollected(context: String, position: Vec3) {
 		ensure(context, position).lastCollectedEpochMillis = System.currentTimeMillis()
 		save()
